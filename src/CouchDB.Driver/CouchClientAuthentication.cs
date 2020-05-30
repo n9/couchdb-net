@@ -17,7 +17,7 @@ namespace CouchDB.Driver
         protected virtual void OnBeforeCall(HttpCall httpCall)
         {
             // If session requests no authorization needed
-            if (httpCall.Request.RequestUri.ToString().Contains("_session"))
+            if (httpCall.Request.RequestUri.ToString().Contains("_session", StringComparison.InvariantCultureIgnoreCase))
             {
                 return;
             }

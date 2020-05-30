@@ -27,7 +27,7 @@ namespace CouchDB.Driver.Settings
         }
         public override int GetHashCode()
         {
-            return Value.GetHashCode();
+            return Value.GetHashCode(StringComparison.InvariantCultureIgnoreCase);
         }
     }
     /// <summary>

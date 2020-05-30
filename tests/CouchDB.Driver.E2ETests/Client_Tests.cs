@@ -2,10 +2,14 @@ using CouchDB.Driver.E2E.Models;
 using CouchDB.Driver.Types;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Mime;
+using System.Threading;
 using System.Threading.Tasks;
+using CouchDB.Driver.DTOs;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace CouchDB.Driver.E2E
@@ -156,6 +160,65 @@ namespace CouchDB.Driver.E2E
                 luke.Surname = "Skywalker";
                 luke = await rebels.CreateOrUpdateAsync(luke).ConfigureAwait(false);
                 Assert.Equal("Skywalker", luke.Surname);
+
+                await client.DeleteDatabaseAsync<Rebel>().ConfigureAwait(false);
+            }
+        }
+
+        [Fact]
+        public async Task Changes()
+        {
+            using (var client = new CouchClient("http://localhost:5984"))
+            {
+                IEnumerable<string> dbs = await client.GetDatabasesNamesAsync().ConfigureAwait(false);
+                CouchDatabase<Rebel> rebels = client.GetDatabase<Rebel>();
+
+                if (dbs.Contains(rebels.Database))
+                {
+                    await client.DeleteDatabaseAsync<Rebel>().ConfigureAwait(false);
+                }
+
+                rebels = await client.CreateDatabaseAsync<Rebel>().ConfigureAwait(false);
+
+                Rebel luke = await rebels.CreateAsync(new Rebel { Name = "Luke", Age = 19 }).ConfigureAwait(false);
+                Assert.Equal("Luke", luke.Name);
+
+                var changesResult = await rebels.GetChangesAsync();
+                Assert.NotEmpty(changesResult.Results);
+                Assert.Equal(changesResult.Results[0].Id, luke.Id);
+
+                await client.DeleteDatabaseAsync<Rebel>().ConfigureAwait(false);
+            }
+        }
+
+        [Fact]
+        public async Task ContinuousChanges()
+        {
+            using (var client = new CouchClient("http://localhost:5984"))
+            {
+                IEnumerable<string> dbs = await client.GetDatabasesNamesAsync().ConfigureAwait(false);
+                CouchDatabase<Rebel> rebels = client.GetDatabase<Rebel>();
+
+                if (dbs.Contains(rebels.Database))
+                {
+                    await client.DeleteDatabaseAsync<Rebel>().ConfigureAwait(false);
+                }
+
+                rebels = await client.CreateDatabaseAsync<Rebel>().ConfigureAwait(false);
+
+                var operations = 0;
+                var cancelSource = new CancellationTokenSource();
+                await foreach (var item in rebels.GetContinuousChangesAsync(null, cancelSource.Token))
+                {
+                    var json = JsonConvert.SerializeObject(item);
+                    Debug.WriteLine(json);
+                    if (operations == 4)
+                    {
+                        cancelSource.Cancel();
+                    }
+
+                    operations++;
+                }
 
                 await client.DeleteDatabaseAsync<Rebel>().ConfigureAwait(false);
             }

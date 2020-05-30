@@ -25,8 +25,8 @@ namespace CouchDB.Driver
         private string _cookieToken;
         private readonly CouchSettings _settings;
         private readonly IFlurlClient _flurlClient;
-        private readonly string[] _systemDatabases = new[] { "_users", "_replicator", "_global_changes" };
-        public string ConnectionString { get; private set; }
+        private readonly string[] _systemDatabases = { "_users", "_replicator", "_global_changes" };
+        public string ConnectionString { get; }
 
         /// <summary>
         /// Creates a new CouchDB client.

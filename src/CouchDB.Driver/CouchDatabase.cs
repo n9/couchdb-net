@@ -12,7 +12,10 @@ using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace CouchDB.Driver
 {
@@ -24,7 +27,6 @@ namespace CouchDB.Driver
     {
         private readonly QueryProvider _queryProvider;
         private readonly IFlurlClient _flurlClient;
-        private readonly CouchSettings _settings;
         private readonly string _connectionString;
         private readonly string _database;
 
@@ -37,14 +39,14 @@ namespace CouchDB.Driver
         /// Section to handle security operations.
         /// </summary>
         public CouchSecurity Security { get; }
-
+        
         internal CouchDatabase(IFlurlClient flurlClient, CouchSettings settings, string connectionString, string db)
         {
             _flurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));
-            _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+            CouchSettings settings1 = settings ?? throw new ArgumentNullException(nameof(settings));
             _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
             _database = db ?? throw new ArgumentNullException(nameof(db));
-            _queryProvider = new CouchQueryProvider(flurlClient, _settings, connectionString, _database);
+            _queryProvider = new CouchQueryProvider(flurlClient, settings1, connectionString, _database);
 
             Database = Uri.UnescapeDataString(_database);
             Security = new CouchSecurity(NewRequest);
@@ -517,6 +519,59 @@ namespace CouchDB.Driver
             }
 
             InitAttachments(document);
+        }
+
+        #endregion
+
+        #region Feed
+
+        public async Task<ChangesFeedResponse> GetChangesAsync(ChangesFeedOptions options = null, bool longPoll = false)
+        {
+            IFlurlRequest request = NewRequest()
+                .AppendPathSegment("_changes");
+
+            if (longPoll)
+            {
+                _ = request.SetQueryParam("feed", "longpoll");
+            }
+
+            if (options != null)
+            {
+                foreach (var (name, value) in options.ToQueryParameters())
+                {
+                    _ = request.SetQueryParam(name, value);
+                }
+            }
+
+            return await request.GetJsonAsync<ChangesFeedResponse>().ConfigureAwait(false);
+        }
+
+        public async IAsyncEnumerable<ChangesFeedResponseResult> GetContinuousChangesAsync(ChangesFeedOptions options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            IFlurlRequest request = NewRequest()
+                .AppendPathSegment("_changes")
+                .SetQueryParam("feed", "continuous");
+
+            if (options != null)
+            {
+                foreach (var (name, value) in options.ToQueryParameters())
+                {
+                    _ = request.SetQueryParam(name, value);
+                }
+            }
+
+            request.WithTimeout(TimeSpan.FromMilliseconds(Timeout.Infinite));
+            Stream stream = await request.GetStreamAsync(cancellationToken, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(line))
+                {
+                    yield return JsonConvert.DeserializeObject<ChangesFeedResponseResult>(line);
+                }
+            }
         }
 
         #endregion
