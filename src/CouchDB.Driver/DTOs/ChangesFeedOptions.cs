@@ -16,6 +16,14 @@ namespace CouchDB.Driver.DTOs
     public class ChangesFeedOptions
     {
         /// <summary>
+        /// Waits until at least one change has occurred, sends the change, then closes the connection.
+        /// </summary>
+        /// <remarks>
+        /// Most commonly used in conjunction with since=now, to wait for the next change. Ignored with continuous feed.
+        /// </remarks>
+        public bool LongPoll { get; set; }
+
+        /// <summary>
         /// Includes conflicts information in response. Ignored if <see cref="IncludeDocs"/> isn’t <c>True</c>.
         /// </summary>
         [JsonProperty("conflicts")]
@@ -124,7 +132,8 @@ namespace CouchDB.Driver.DTOs
         [JsonProperty("seq_interval")]
         [DefaultValue(null)]
         public int? SeqInterval { get; set; }
-        
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase", Justification = "<Pending>")]
         internal IEnumerable<(string Name, string Value)> ToQueryParameters()
         {
             TAttribute GetAttribute<TAttribute>(ICustomAttributeProvider propertyInfo)
@@ -145,9 +154,25 @@ namespace CouchDB.Driver.DTOs
                                 string.Equals(propertyValue?.ToString(), propertyDefaultValue?.ToString(), StringComparison.InvariantCultureIgnoreCase);
                 if (!isDefault)
                 {
-                    yield return (propertyName, propertyValue?.ToString());
+                    var propertyStringValue = propertyValue?.ToString();
+                    if (propertyInfo.PropertyType == typeof(bool))
+                    {
+                        propertyStringValue = propertyStringValue?.ToLowerInvariant();
+                    }
+                    yield return (propertyName, propertyStringValue);
                 }
             }
         }
+    }
+
+    internal class ChangesFeedFilterDocuments
+    {
+        public ChangesFeedFilterDocuments(IList<string> documentIds)
+        {
+            DocumentIds = documentIds;
+        }
+
+        [JsonProperty("doc_ids")]
+        public IList<string> DocumentIds { get; set; }
     }
 }

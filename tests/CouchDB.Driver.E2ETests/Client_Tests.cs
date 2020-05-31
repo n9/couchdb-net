@@ -183,7 +183,12 @@ namespace CouchDB.Driver.E2E
                 Rebel luke = await rebels.CreateAsync(new Rebel { Name = "Luke", Age = 19 }).ConfigureAwait(false);
                 Assert.Equal("Luke", luke.Name);
 
-                var changesResult = await rebels.GetChangesAsync();
+                var options = new ChangesFeedOptions
+                {
+                    IncludeDocs = true
+                };
+                var filter = ChangesFeedFilter.Selector<Rebel>(r => r.Name == "Luke" && r.Age == 19);
+                var changesResult = await rebels.GetChangesAsync(options, filter);
                 Assert.NotEmpty(changesResult.Results);
                 Assert.Equal(changesResult.Results[0].Id, luke.Id);
 
@@ -206,18 +211,27 @@ namespace CouchDB.Driver.E2E
 
                 rebels = await client.CreateDatabaseAsync<Rebel>().ConfigureAwait(false);
 
-                var operations = 0;
-                var cancelSource = new CancellationTokenSource();
-                await foreach (var item in rebels.GetContinuousChangesAsync(null, cancelSource.Token))
-                {
-                    var json = JsonConvert.SerializeObject(item);
-                    Debug.WriteLine(json);
-                    if (operations == 4)
-                    {
-                        cancelSource.Cancel();
-                    }
+                Rebel luke = await rebels.CreateAsync(new Rebel {Name = "Luke", Age = 19}).ConfigureAwait(false);
+                Assert.Equal("Luke", luke.Name);
 
-                    operations++;
+
+                luke.Surname = "Vader";
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(2000);
+                    await rebels.CreateOrUpdateAsync(luke);
+                });
+
+                var ids = new[] {luke.Id};
+                var option = new ChangesFeedOptions
+                {
+                    Since = "now"
+                };
+                var filter = ChangesFeedFilter.DocumentIds(ids);
+                using var cancelSource = new CancellationTokenSource();
+                await foreach (var _ in rebels.GetContinuousChangesAsync(option, filter, cancelSource.Token))
+                {
+                    cancelSource.Cancel();
                 }
 
                 await client.DeleteDatabaseAsync<Rebel>().ConfigureAwait(false);

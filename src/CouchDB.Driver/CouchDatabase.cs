@@ -27,6 +27,7 @@ namespace CouchDB.Driver
     {
         private readonly QueryProvider _queryProvider;
         private readonly IFlurlClient _flurlClient;
+        private readonly CouchSettings _settings;
         private readonly string _connectionString;
         private readonly string _database;
 
@@ -43,10 +44,10 @@ namespace CouchDB.Driver
         internal CouchDatabase(IFlurlClient flurlClient, CouchSettings settings, string connectionString, string db)
         {
             _flurlClient = flurlClient ?? throw new ArgumentNullException(nameof(flurlClient));
-            CouchSettings settings1 = settings ?? throw new ArgumentNullException(nameof(settings));
+            _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
             _database = db ?? throw new ArgumentNullException(nameof(db));
-            _queryProvider = new CouchQueryProvider(flurlClient, settings1, connectionString, _database);
+            _queryProvider = new CouchQueryProvider(flurlClient, _settings, connectionString, _database);
 
             Database = Uri.UnescapeDataString(_database);
             Security = new CouchSecurity(NewRequest);
@@ -290,6 +291,7 @@ namespace CouchDB.Driver
             return documents;
         }
 
+        /// <summary>
         /// Finds all documents with given IDs.
         /// </summary>
         /// <param name="docIds">The collection of documents IDs.</param>
@@ -525,52 +527,165 @@ namespace CouchDB.Driver
 
         #region Feed
 
-        public async Task<ChangesFeedResponse> GetChangesAsync(ChangesFeedOptions options = null, bool longPoll = false)
+        /// <summary>
+        /// Returns a sorted list of changes made to documents in the database.
+        /// </summary>
+        /// <remarks>
+        /// Only the most recent change for a given document is guaranteed to be provided.
+        /// </remarks>
+        /// <param name="options">Options to apply to the request.</param>
+        /// <param name="filter">A filter to apply to the result.</param>
+        /// <returns></returns>
+        public async Task<ChangesFeedResponse<TSource>> GetChangesAsync(ChangesFeedOptions options = null, ChangesFeedFilter filter = null)
         {
             IFlurlRequest request = NewRequest()
                 .AppendPathSegment("_changes");
 
-            if (longPoll)
+            if (options?.LongPoll == true)
             {
                 _ = request.SetQueryParam("feed", "longpoll");
             }
 
-            if (options != null)
+            SetChangesFeedOptions(request, options);
+
+            return filter == null
+                ? await request.GetJsonAsync<ChangesFeedResponse<TSource>>()
+                    .ConfigureAwait(false)
+                : await QueryWithFilterAsync(request, filter)
+                    .ConfigureAwait(false);
+        }
+        
+        private async Task<ChangesFeedResponse<TSource>> QueryWithFilterAsync(IFlurlRequest request, ChangesFeedFilter filter)
+        {
+            if (filter is DocumentIdsChangesFeedFilter documentIdsFilter)
             {
-                foreach (var (name, value) in options.ToQueryParameters())
-                {
-                    _ = request.SetQueryParam(name, value);
-                }
+                return await request
+                    .SetQueryParam("filter", "_doc_ids")
+                    .PostJsonAsync(new ChangesFeedFilterDocuments(documentIdsFilter.Value))
+                    .ReceiveJson<ChangesFeedResponse<TSource>>()
+                    .ConfigureAwait(false);
+            }
+            if (filter is SelectorChangesFeedFilter<TSource> selectorFilter)
+            {
+                MethodCallExpression whereExpression = Expression.Call(typeof(Queryable), nameof(Queryable.Where),
+                    new[] {typeof(TSource)}, Expression.Constant(Array.Empty<TSource>().AsQueryable()), selectorFilter.Value);
+                var jsonSelector = new QueryTranslator(_settings).Translate(whereExpression);
+                return await request
+                    .WithHeader("Content-Type", "application/json")
+                    .SetQueryParam("filter", "_selector")
+                    .PostStringAsync(jsonSelector)
+                    .ReceiveJson<ChangesFeedResponse<TSource>>()
+                    .ConfigureAwait(false);
             }
 
-            return await request.GetJsonAsync<ChangesFeedResponse>().ConfigureAwait(false);
+            if (filter is DesignChangesFeedFilter)
+            {
+                return await request
+                    .SetQueryParam("filter", "_design")
+                    .GetJsonAsync<ChangesFeedResponse<TSource>>()
+                    .ConfigureAwait(false);
+            }
+            if (filter is ViewChangesFeedFilter viewFilter)
+            {
+                return await request
+                    .SetQueryParam("filter", "_view")
+                    .SetQueryParam("view", viewFilter.Value)
+                    .GetJsonAsync<ChangesFeedResponse<TSource>>()
+                    .ConfigureAwait(false);
+            }
+            throw new InvalidOperationException($"Filter of type {filter.GetType().Name} not supported.");
         }
 
-        public async IAsyncEnumerable<ChangesFeedResponseResult> GetContinuousChangesAsync(ChangesFeedOptions options = null,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Returns changes as they happen.
+        /// </summary>
+        /// <remarks>
+        /// A continuous feed stays open and connected to the database until explicitly closed.
+        /// </remarks>
+        /// <param name="options">Options to apply to the request.</param>
+        /// <param name="filter">A filter to apply to the result.</param>
+        /// <param name="cancellationToken">A cancellation token to stop receiving changes.</param>
+        /// <returns></returns>
+        public async IAsyncEnumerable<ChangesFeedResponseResult<TSource>> GetContinuousChangesAsync(ChangesFeedOptions options, ChangesFeedFilter filter,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            var infiniteTimeout = TimeSpan.FromMilliseconds(Timeout.Infinite);
             IFlurlRequest request = NewRequest()
+                .WithTimeout(infiniteTimeout)
                 .AppendPathSegment("_changes")
                 .SetQueryParam("feed", "continuous");
 
-            if (options != null)
-            {
-                foreach (var (name, value) in options.ToQueryParameters())
-                {
-                    _ = request.SetQueryParam(name, value);
-                }
-            }
+            SetChangesFeedOptions(request, options);
 
-            request.WithTimeout(TimeSpan.FromMilliseconds(Timeout.Infinite));
-            Stream stream = await request.GetStreamAsync(cancellationToken, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            await using Stream stream = filter == null
+                ? await request.GetStreamAsync(cancellationToken, HttpCompletionOption.ResponseHeadersRead)
+                    .ConfigureAwait(false)
+                : await QueryContinuousWithFilterAsync(request, filter, cancellationToken)
+                    .ConfigureAwait(false);
             using var reader = new StreamReader(stream);
-            while (!reader.EndOfStream)
+            while (!cancellationToken.IsCancellationRequested && !reader.EndOfStream)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    continue;
+                }
+
                 var line = await reader.ReadLineAsync().ConfigureAwait(false);
                 if (!string.IsNullOrEmpty(line))
                 {
-                    yield return JsonConvert.DeserializeObject<ChangesFeedResponseResult>(line);
+                    yield return JsonConvert.DeserializeObject<ChangesFeedResponseResult<TSource>>(line);
                 }
+            }
+        }
+
+        private async Task<Stream> QueryContinuousWithFilterAsync(IFlurlRequest request, ChangesFeedFilter filter, CancellationToken cancellationToken)
+        {
+            if (filter is DocumentIdsChangesFeedFilter documentIdsFilter)
+            {
+                return await request
+                    .SetQueryParam("filter", "_doc_ids")
+                    .PostJsonStreamAsync(new ChangesFeedFilterDocuments(documentIdsFilter.Value), cancellationToken, HttpCompletionOption.ResponseHeadersRead)
+                    .ConfigureAwait(false);
+            }
+            if (filter is SelectorChangesFeedFilter<TSource> selectorFilter)
+            {
+                MethodCallExpression whereExpression = Expression.Call(typeof(Queryable), nameof(Queryable.Where),
+                    new[] { typeof(TSource) }, Expression.Constant(Array.Empty<TSource>().AsQueryable()), selectorFilter.Value);
+                var jsonSelector = new QueryTranslator(_settings).Translate(whereExpression);
+                return await request
+                    .WithHeader("Content-Type", "application/json")
+                    .SetQueryParam("filter", "_selector")
+                    .PostStringStreamAsync(jsonSelector, cancellationToken, HttpCompletionOption.ResponseHeadersRead)
+                    .ConfigureAwait(false);
+            }
+            if (filter is DesignChangesFeedFilter)
+            {
+                return await request
+                    .SetQueryParam("filter", "_design")
+                    .GetStreamAsync(cancellationToken, HttpCompletionOption.ResponseHeadersRead)
+                    .ConfigureAwait(false);
+            }
+            if (filter is ViewChangesFeedFilter viewFilter)
+            {
+                return await request
+                    .SetQueryParam("filter", "_view")
+                    .SetQueryParam("view", viewFilter.Value)
+                    .GetStreamAsync(cancellationToken, HttpCompletionOption.ResponseHeadersRead)
+                    .ConfigureAwait(false);
+            }
+            throw new InvalidOperationException($"Filter of type {filter.GetType().Name} not supported.");
+        }
+
+        private void SetChangesFeedOptions(IFlurlRequest request, ChangesFeedOptions options)
+        {
+            if (options == null)
+            {
+                return;
+            }
+
+            foreach (var (name, value) in options.ToQueryParameters())
+            {
+                _ = request.SetQueryParam(name, value);
             }
         }
 

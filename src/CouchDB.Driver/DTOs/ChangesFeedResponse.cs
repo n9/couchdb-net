@@ -1,9 +1,10 @@
 ﻿using System.Collections.Generic;
+using CouchDB.Driver.Types;
 using Newtonsoft.Json;
 
 namespace CouchDB.Driver.DTOs
 {
-    public class ChangesFeedResponse
+    public class ChangesFeedResponse<TSource> where TSource : CouchDocument
     {
         [JsonProperty("last_seq")]
         public string LastSequence { get; set; }
@@ -12,10 +13,10 @@ namespace CouchDB.Driver.DTOs
         public int Pending { get; set; }
 
         [JsonProperty("results")]
-        public IList<ChangesFeedResponseResult> Results { get; internal set; }
+        public IList<ChangesFeedResponseResult<TSource>> Results { get; internal set; }
     }
 
-    public class ChangesFeedResponseResult
+    public class ChangesFeedResponseResult<TSource> where TSource: CouchDocument
     {
         [JsonProperty("changes")]
         public IList<ChangesFeedResponseResultChange> Changes { get; internal set; }
@@ -28,6 +29,9 @@ namespace CouchDB.Driver.DTOs
 
         [JsonProperty("deleted")]
         public bool Deleted { get; set; }
+
+        [JsonProperty("doc")]
+        public TSource Document { get; set; }
     }
 
     public class ChangesFeedResponseResultChange
