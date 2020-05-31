@@ -597,10 +597,10 @@ namespace CouchDB.Driver
         }
 
         /// <summary>
-        /// Returns changes as they happen.
+        /// Returns changes as they happen. A continuous feed stays open and connected to the database until explicitly closed.
         /// </summary>
         /// <remarks>
-        /// A continuous feed stays open and connected to the database until explicitly closed.
+        /// To stop receiving changes call <c>Cancel()</c> on the <c>CancellationTokenSource</c> used to create the <c>CancellationToken</c>.
         /// </remarks>
         /// <param name="options">Options to apply to the request.</param>
         /// <param name="filter">A filter to apply to the result.</param>
