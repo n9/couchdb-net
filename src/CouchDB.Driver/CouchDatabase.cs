@@ -21,6 +21,7 @@ using CouchDB.Driver.Local;
 using CouchDB.Driver.Options;
 using CouchDB.Driver.Query;
 using Newtonsoft.Json;
+using System.Net;
 
 namespace CouchDB.Driver
 {
@@ -66,28 +67,27 @@ namespace CouchDB.Driver
         /// <inheritdoc />
         public async Task<TSource?> FindAsync(string docId, bool withConflicts = false, CancellationToken cancellationToken = default)
         {
-            try
+            IFlurlRequest request = NewRequest()
+                    .AppendPathSegment(docId);
+
+            if (withConflicts)
             {
-                IFlurlRequest request = NewRequest()
-                        .AppendPathSegment(docId);
-
-                if (withConflicts)
-                {
-                    request = request.SetQueryParam("conflicts", true);
-                }
-
-                TSource document = await request
-                    .GetJsonAsync<TSource>(cancellationToken)
-                    .SendRequestAsync()
-                    .ConfigureAwait(false);
-
-                InitAttachments(document);
-                return document;
+                request = request.SetQueryParam("conflicts", true);
             }
-            catch (CouchNotFoundException)
+
+            TSource document = await request
+                .AllowHttpStatus(HttpStatusCode.NotFound)
+                .GetJsonAsync<TSource>(cancellationToken)
+                .SendRequestAsync()
+                .ConfigureAwait(false);
+
+            if (document.Id == null) // hack before Flurl v3
             {
                 return null;
             }
+
+            InitAttachments(document);
+            return document;
         }
 
         /// <inheritdoc />
